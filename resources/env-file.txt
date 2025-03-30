@@ -7,3 +7,4 @@ OPENAI_API_KEY=your_openai_api_key_here
 
 # Data configuration
 CSV_PATH=./data/classification_data.csv
+CSV_PATH=./data/classification_data.csv

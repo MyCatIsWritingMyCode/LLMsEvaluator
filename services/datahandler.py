@@ -1,7 +1,4 @@
-import csv
 import logging
-import random
-from typing import List, Dict, Any
 import pandas as pd
 
 from models.label_model import LabelModel
@@ -23,7 +20,7 @@ class DataHandler:
         self.sample_size = sample_size
         self.logger = logging.getLogger(__name__)
     
-    def read_csv(self) -> List[LabelModel]:
+    def read_csv(self) -> list[LabelModel]:
         """
         Read data from CSV file and randomly select a sample.
         
@@ -36,10 +33,10 @@ class DataHandler:
         """
         try:
             self.logger.info(f"Reading data from {self.csv_path}")
-            df = pd.read_csv(self.csv_path)
+            df = pd.read_csv(self.csv_path, delimiter=';')
             
             # Check if required columns exist
-            required_columns = ['text', 'label', 'label_name']
+            required_columns = ['text', 'label']
             for col in required_columns:
                 if col not in df.columns:
                     raise ValueError(f"Required column '{col}' not found in CSV")
@@ -51,10 +48,12 @@ class DataHandler:
             # Convert to list of LabelModel objects
             data = []
             for _, row in df.iterrows():
+                print(row['text'])
+                print(row['label'])
                 data.append(LabelModel(
                     text=row['text'],
-                    label=int(row['label']),
-                    label_name=row['label_name']
+                    label_name=row['label'],
+                    predicted_label=None
                 ))
             
             self.logger.info(f"Successfully read {len(data)} rows from CSV")

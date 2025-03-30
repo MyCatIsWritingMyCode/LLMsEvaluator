@@ -1,18 +1,15 @@
-import logging
-import random
-from typing import List, Dict, Any, Tuple
-import pandas as pd
+import logging, random
 from collections import defaultdict
 
-from label_model import LabelModel
-from datahandler import DataHandler
-from prompt_runner import PromptRunner
+from models.label_model import LabelModel
+from services.datahandler import DataHandler
+from services.prompt_runner import PromptRunner
 
 class Orchestrator:
     """
     Class to orchestrate the process of evaluating language models for text classification.
     """
-    
+
     def __init__(self, 
                  data_handler: DataHandler, 
                  prompt_runner: PromptRunner,
@@ -29,41 +26,47 @@ class Orchestrator:
         self.prompt_runner = prompt_runner
         self.csv_path = csv_path
         self.logger = logging.getLogger(__name__)
+
+        self._ERROR = "ERROR"
     
-    def run(self) -> Dict[str, Any]:
+    def run(self):
         """
         Run the evaluation process.
         
         Returns:
             Dictionary containing evaluation results.
-            
-        Raises:
-            Exception: If any error occurs during evaluation.
         """
         try:
             self.logger.info("Starting evaluation process")
             
             # Read data
             data = self.data_handler.read_csv()
-            
+
+            # Randomly select x entries
+            random_testing_samples = random.sample(data, 100)
+
+            # Remove the x samples that are including in the testing set
+            for item in random_testing_samples:
+                data.remove(item)
+
             # Get unique label names
             label_names = list(set(item.label_name for item in data))
             self.logger.info(f"Found {len(label_names)} unique labels: {label_names}")
             
             # Select examples for few-shot prompting
             few_shot_examples = self._select_few_shot_examples(data, label_names)
-            
+
             # Run evaluations
-            results = {
+            results: dict[str, dict[str, (str, list[LabelModel])]] = {
                 "ollama": {
-                    "zero_shot": self._evaluate_zero_shot(data, label_names, "ollama"),
-                    "one_shot": self._evaluate_one_shot(data, label_names, "ollama", few_shot_examples),
-                    "few_shot": self._evaluate_few_shot(data, label_names, "ollama", few_shot_examples)
+                    "zero_shot": self._evaluate_zero_shot(random_testing_samples, label_names, "ollama"),
+                    "one_shot": self._evaluate_one_shot(random_testing_samples, label_names, "ollama", random.choice(few_shot_examples)),
+                    "few_shot": self._evaluate_few_shot(random_testing_samples, label_names, "ollama", few_shot_examples)
                 },
                 "openai": {
-                    "zero_shot": self._evaluate_zero_shot(data, label_names, "openai"),
-                    "one_shot": self._evaluate_one_shot(data, label_names, "openai", few_shot_examples),
-                    "few_shot": self._evaluate_few_shot(data, label_names, "openai", few_shot_examples)
+                    "zero_shot": self._evaluate_zero_shot(random_testing_samples, label_names, "openai"),
+                    "one_shot": self._evaluate_one_shot(random_testing_samples, label_names, "openai", random.choice(few_shot_examples)),
+                    "few_shot": self._evaluate_few_shot(random_testing_samples, label_names, "openai", few_shot_examples)
                 }
             }
             
@@ -71,13 +74,22 @@ class Orchestrator:
             self._calculate_metrics(results)
             
             self.logger.info("Evaluation process completed successfully")
-            return results
+
+            # Log summary of results
+            self.logger.info("Evaluation summary:")
+            for model in ["ollama", "openai"]:
+                for prompt_type in ["zero_shot", "one_shot", "few_shot"]:
+                    accuracy = results[model][prompt_type]["accuracy"]
+                    self.logger.info(f"Model: {model}, Prompt Type: {prompt_type}, Accuracy: {accuracy:.4f}")
+
+            self.logger.info("Text classification evaluation completed successfully")
             
         except Exception as e:
             self.logger.error(f"Error in evaluation process: {str(e)}")
             raise
-    
-    def _select_few_shot_examples(self, data: List[LabelModel], label_names: List[str]) -> Dict[str, Tuple[str, str]]:
+
+    @staticmethod
+    def _select_few_shot_examples(data: list[LabelModel], label_names: list[str]) -> list[LabelModel]:
         """
         Select examples for one-shot and few-shot prompting.
         
@@ -88,8 +100,8 @@ class Orchestrator:
         Returns:
             Dictionary mapping label names to (text, label_name) examples.
         """
-        examples = {}
-        
+        examples:list[LabelModel] = []
+
         # Group data by label
         label_groups = defaultdict(list)
         for item in data:
@@ -99,14 +111,14 @@ class Orchestrator:
         for label in label_names:
             if label in label_groups and label_groups[label]:
                 example = random.choice(label_groups[label])
-                examples[label] = (example.text, example.label_name)
+                examples.append(example)
         
         return examples
     
     def _evaluate_zero_shot(self, 
-                           data: List[LabelModel], 
-                           label_names: List[str], 
-                           model_type: str) -> Dict[str, Any]:
+                           data: list[LabelModel],
+                           label_names: list[str],
+                           model_type: str) -> (str, list[LabelModel]):
         """
         Evaluate zero-shot prompting performance.
         
@@ -131,25 +143,18 @@ class Orchestrator:
                 )
                 
                 # Parse response to get predicted label
-                predicted_label = self._parse_label_from_response(response, label_names)
+                item.predicted_label = self._parse_label_from_response(response, label_names)
                 
-                results.append({
-                    "text": item.text,
-                    "true_label": item.label_name,
-                    "predicted_label": predicted_label,
-                    "correct": predicted_label == item.label_name
-                })
+                results.append(item)
+
             except Exception as e:
                 self.logger.error(f"Error in zero-shot evaluation for {model_type} with text '{item.text[:30]}...': {str(e)}")
-                results.append({
-                    "text": item.text,
-                    "true_label": item.label_name,
-                    "predicted_label": "ERROR",
-                    "correct": False
-                })
+                item.predicted_label = self._ERROR
+
+                results.append(item)
         
         # Calculate accuracy
-        correct_count = sum(1 for r in results if r["correct"])
+        correct_count = sum(1 for r in results if r.predicted_label == r.predicted_label)
         accuracy = correct_count / len(results) if results else 0
         
         self.logger.info(f"{model_type} zero-shot accuracy: {accuracy:.4f}")
@@ -160,10 +165,10 @@ class Orchestrator:
         }
     
     def _evaluate_one_shot(self, 
-                          data: List[LabelModel], 
-                          label_names: List[str], 
+                          data: list[LabelModel],
+                          label_names: list[str],
                           model_type: str,
-                          few_shot_examples: Dict[str, Tuple[str, str]]) -> Dict[str, Any]:
+                          one_shot_examples: LabelModel) -> (str, list[LabelModel]):
         """
         Evaluate one-shot prompting performance.
         
@@ -171,49 +176,36 @@ class Orchestrator:
             data: List of LabelModel objects.
             label_names: List of unique label names.
             model_type: Either "ollama" or "openai".
-            few_shot_examples: Dictionary mapping label names to (text, label_name) examples.
+            one_shot_examples: example (text, label_name).
             
         Returns:
             Dictionary containing evaluation results.
         """
         self.logger.info(f"Evaluating {model_type} with one-shot prompting")
         
-        # Get a random example for one-shot prompting
-        example_label = random.choice(list(few_shot_examples.keys()))
-        example_text, _ = few_shot_examples[example_label]
-        
-        results = []
+        results:list[LabelModel] = []
         
         for item in data:
             try:
                 response = self.prompt_runner.run_one_shot(
                     text=item.text,
-                    example_text=example_text,
-                    example_label=example_label,
+                    example=one_shot_examples,
                     label_names=label_names,
                     model_type=model_type
                 )
                 
                 # Parse response to get predicted label
-                predicted_label = self._parse_label_from_response(response, label_names)
-                
-                results.append({
-                    "text": item.text,
-                    "true_label": item.label_name,
-                    "predicted_label": predicted_label,
-                    "correct": predicted_label == item.label_name
-                })
+                item.predicted_label = self._parse_label_from_response(response, label_names)
+
+                results.append(item)
+
             except Exception as e:
                 self.logger.error(f"Error in one-shot evaluation for {model_type} with text '{item.text[:30]}...': {str(e)}")
-                results.append({
-                    "text": item.text,
-                    "true_label": item.label_name,
-                    "predicted_label": "ERROR",
-                    "correct": False
-                })
+                item.predicted_label = self._ERROR
+                results.append(item)
         
         # Calculate accuracy
-        correct_count = sum(1 for r in results if r["correct"])
+        correct_count = sum(1 for r in results if r.label_name == r.predicted_label)
         accuracy = correct_count / len(results) if results else 0
         
         self.logger.info(f"{model_type} one-shot accuracy: {accuracy:.4f}")
@@ -224,10 +216,10 @@ class Orchestrator:
         }
     
     def _evaluate_few_shot(self, 
-                          data: List[LabelModel], 
-                          label_names: List[str], 
+                          data: list[LabelModel],
+                          label_names: list[str],
                           model_type: str,
-                          few_shot_examples: Dict[str, Tuple[str, str]]) -> Dict[str, Any]:
+                          few_shot_examples: list[LabelModel]) -> (str, list[LabelModel]):
         """
         Evaluate few-shot prompting performance.
         
@@ -242,40 +234,29 @@ class Orchestrator:
         """
         self.logger.info(f"Evaluating {model_type} with few-shot prompting")
         
-        # Convert few-shot examples to the format expected by run_few_shot
-        examples = [(text, label) for label, (text, _) in few_shot_examples.items()]
-        
         results = []
         
         for item in data:
             try:
                 response = self.prompt_runner.run_few_shot(
                     text=item.text,
-                    examples=examples,
+                    examples=few_shot_examples,
                     label_names=label_names,
                     model_type=model_type
                 )
                 
                 # Parse response to get predicted label
-                predicted_label = self._parse_label_from_response(response, label_names)
-                
-                results.append({
-                    "text": item.text,
-                    "true_label": item.label_name,
-                    "predicted_label": predicted_label,
-                    "correct": predicted_label == item.label_name
-                })
+                item.predicted_label = self._parse_label_from_response(response, label_names)
+
+                results.append(item)
+
             except Exception as e:
                 self.logger.error(f"Error in few-shot evaluation for {model_type} with text '{item.text[:30]}...': {str(e)}")
-                results.append({
-                    "text": item.text,
-                    "true_label": item.label_name,
-                    "predicted_label": "ERROR",
-                    "correct": False
-                })
+                item.predicted_label = self._ERROR
+                results.append(item)
         
         # Calculate accuracy
-        correct_count = sum(1 for r in results if r["correct"])
+        correct_count = sum(1 for r in results if r.label_name == r.predicted_label)
         accuracy = correct_count / len(results) if results else 0
         
         self.logger.info(f"{model_type} few-shot accuracy: {accuracy:.4f}")
@@ -285,7 +266,7 @@ class Orchestrator:
             "results": results
         }
     
-    def _parse_label_from_response(self, response: str, label_names: List[str]) -> str:
+    def _parse_label_from_response(self, response: str, label_names: list[str]) -> str:
         """
         Parse model response to extract the predicted label.
         
@@ -307,10 +288,10 @@ class Orchestrator:
             if label.lower() in response_lower:
                 return label
         
-        self.logger.warning(f"Could not parse label from response: {response[:100]}...")
+        self.logger.warning(f"Could not parse label from response: {response[:50]}...")
         return "UNKNOWN"
     
-    def _calculate_metrics(self, results: Dict[str, Any]) -> None:
+    def _calculate_metrics(self, results: dict[str, dict[str, (str, list[LabelModel])]]) -> None:
         """
         Calculate and log summary metrics from the evaluation results.
         

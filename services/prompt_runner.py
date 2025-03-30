@@ -1,18 +1,16 @@
-import logging
-import json
-import requests
-from typing import List, Dict, Any, Optional, Union, Tuple
+import logging, json, requests, re
 
 import openai
 from openai import OpenAI
+from ollama import chat, ChatResponse
+from models.label_model import LabelModel
 
 class PromptRunner:
     """
     Class to handle running prompts on different language models.
     """
     
-    def __init__(self, 
-                 ollama_url: str, 
+    def __init__(self,
                  ollama_model: str,
                  openai_model: str, 
                  openai_api_key: str):
@@ -20,12 +18,10 @@ class PromptRunner:
         Initialize the PromptRunner.
         
         Args:
-            ollama_url: URL for the local Ollama API.
             ollama_model: Model identifier for Ollama.
             openai_model: Model identifier for OpenAI.
             openai_api_key: API key for OpenAI.
         """
-        self.ollama_url = ollama_url
         self.ollama_model = ollama_model
         self.openai_model = openai_model
         self.openai_client = OpenAI(api_key=openai_api_key)
@@ -42,31 +38,21 @@ class PromptRunner:
             The model's response as a string.
             
         Raises:
-            requests.RequestException: If the API request fails.
+            requests.RequestException: If the request fails.
             ValueError: If the response format is unexpected.
         """
         try:
             self.logger.info(f"Running prompt on Ollama model: {self.ollama_model}")
-            response = requests.post(
-                f"{self.ollama_url}/api/generate",
-                json={
-                    "model": self.ollama_model,
-                    "prompt": prompt,
-                    "stream": False
+
+            response: ChatResponse = chat(model='deepseek-r1:7b', messages=[
+                {
+                    'role': 'user',
+                    'content': prompt
                 },
-                timeout=120  # 2 minute timeout
-            )
-            response.raise_for_status()
-            result = response.json()
-            if "response" not in result:
-                raise ValueError(f"Unexpected response format from Ollama: {result}")
-            return result.get("response", "")
-        except requests.RequestException as e:
-            self.logger.error(f"API error running Ollama prompt: {str(e)}")
-            raise
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Invalid JSON response from Ollama: {str(e)}")
-            raise ValueError(f"Invalid JSON response from Ollama: {str(e)}")
+            ])
+            result = re.sub(r'<think>.*?</think>', '', response.message.content, flags=re.DOTALL)
+            return result
+
         except Exception as e:
             self.logger.error(f"Error running Ollama prompt: {str(e)}")
             raise
@@ -101,7 +87,7 @@ class PromptRunner:
             self.logger.error(f"Error running OpenAI prompt: {str(e)}")
             raise
     
-    def run_zero_shot(self, text: str, label_names: List[str], model_type: str) -> str:
+    def run_zero_shot(self, text: str, label_names: list[str], model_type: str) -> str:
         """
         Run a zero-shot prompting on the specified model.
         
@@ -131,15 +117,14 @@ class PromptRunner:
         else:
             raise ValueError(f"Unknown model type: {model_type}")
     
-    def run_one_shot(self, text: str, example_text: str, example_label: str, 
-                    label_names: List[str], model_type: str) -> str:
+    def run_one_shot(self, text: str, example: LabelModel,
+                    label_names: list[str], model_type: str) -> str:
         """
         Run a one-shot prompting on the specified model.
         
         Args:
             text: The text to classify.
-            example_text: An example text.
-            example_label: The label for the example text.
+            example: example (text, label).
             label_names: List of possible label names.
             model_type: Either "ollama" or "openai".
             
@@ -153,8 +138,8 @@ class PromptRunner:
         Please classify the following text into one of these categories: {', '.join(label_names)}.
         
         Example:
-        Text: "{example_text}"
-        Category: {example_label}
+        Text: "{example.text}"
+        Category: {example.label_name}
         
         Now classify this:
         Text: "{text}"
@@ -169,14 +154,14 @@ class PromptRunner:
         else:
             raise ValueError(f"Unknown model type: {model_type}")
     
-    def run_few_shot(self, text: str, examples: List[Tuple[str, str]], 
-                    label_names: List[str], model_type: str) -> str:
+    def run_few_shot(self, text: str, examples: list[LabelModel],
+                    label_names: list[str], model_type: str) -> str:
         """
         Run a few-shot prompting on the specified model.
         
         Args:
             text: The text to classify.
-            examples: List of (example_text, example_label) tuples.
+            examples: List of (example_text, example_label).
             label_names: List of possible label names.
             model_type: Either "ollama" or "openai".
             
@@ -187,8 +172,8 @@ class PromptRunner:
             ValueError: If the model type is unknown.
         """
         examples_str = "\n\n".join([
-            f"Text: \"{ex_text}\"\nCategory: {ex_label}" 
-            for ex_text, ex_label in examples
+            f"Text: \"{example.text}\"\nCategory: {example.label_name}"
+            for example in examples
         ])
         
         prompt = f"""
