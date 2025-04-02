@@ -1,4 +1,4 @@
-import logging, json, requests, re
+import logging, re
 
 import openai
 from openai import OpenAI
@@ -12,7 +12,7 @@ class PromptRunner:
     
     def __init__(self,
                  ollama_model: str,
-                 openai_model: str, 
+                 openai_model: str,
                  openai_api_key: str):
         """
         Initialize the PromptRunner.
@@ -44,12 +44,13 @@ class PromptRunner:
         try:
             self.logger.info(f"Running prompt on Ollama model: {self.ollama_model}")
 
-            response: ChatResponse = chat(model='deepseek-r1:7b', messages=[
+            response: ChatResponse = chat(model=self.ollama_model, messages=[
                 {
                     'role': 'user',
                     'content': prompt
                 },
             ])
+
             result = re.sub(r'<think>.*?</think>', '', response.message.content, flags=re.DOTALL)
             return result
 
@@ -135,7 +136,8 @@ class PromptRunner:
             ValueError: If the model type is unknown.
         """
         prompt = f"""
-        Please classify the following text into one of these categories: {', '.join(label_names)}.
+        Please classify the following text into one of these categories: 
+        {', '.join(label_names)}.
         
         Example:
         Text: "{example.text}"

@@ -35,7 +35,9 @@ This project evaluates the performance of text classification using two language
 * Configure the `.env` file in the root folder with the following variables:
 
         OLLAMA_MODEL=[name of the model e.g. deepseek-r1:7b]
+        OLLAMA_ACTIVE=true
         OPENAI_MODEL=[name of the OpenAI model e.g. gpt-4o]
+        OPENAI_ACTIVE=false
         OPENAI_API_KEY=[your_openai_api_key_here]
         CSV_PATH=[Path to your CSV file]
 

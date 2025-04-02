@@ -19,14 +19,14 @@ class Container(containers.DeclarativeContainer):
     logger = providers.Resource(
         logging.config.fileConfig,
         fname="log.ini",
-        defaults = {'logpath': datetime.datetime.now().strftime('%Y_%m_%d.log')},
+        defaults = {'logpath': datetime.datetime.now().strftime('%Y_%m_%d.log')}
     )
 
     # Services
     data_handler = providers.Factory(
         DataHandler,
         csv_path=config.csv_path,
-        sample_size=300
+        sample_size=60
     )
 
     prompt_runner = providers.Factory(
@@ -40,6 +40,8 @@ class Container(containers.DeclarativeContainer):
         Orchestrator,
         data_handler=data_handler,
         prompt_runner=prompt_runner,
+        ollama_active=config.ollama_active,
+        openai_active=config.openai_active,
         csv_path=config.csv_path
     )
 
@@ -74,14 +76,13 @@ if __name__ == "__main__":
     container.config.openai_model.from_env("OPENAI_MODEL", required=True)
     container.config.openai_api_key.from_env("OPENAI_API_KEY", required=True)
     container.config.csv_path.from_env("CSV_PATH", required=True)
+    container.config.ollama_active.from_env("OLLAMA_ACTIVE", required=True)
+    container.config.openai_active.from_env("OPENAI_ACTIVE", required=True)
 
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M")
-    log_filepath = f"logs/{timestamp}_log.txt"
-    container.config.log_filepath.from_value(log_filepath)
+    # timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M")
+    # log_filepath = f"logs/{timestamp}_log.txt"
+    # container.config.log_filepath.from_value(log_filepath)
 
-    # test if config is correct e.g.
-    # assert container.config.ollama_model() == "deepseek-r1:7b"
-    print(__name__)
     container.init_resources()
 
     # Wire container

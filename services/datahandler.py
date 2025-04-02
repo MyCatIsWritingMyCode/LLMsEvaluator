@@ -8,7 +8,7 @@ class DataHandler:
     Class to handle data operations for text classification.
     """
     
-    def __init__(self, csv_path: str, sample_size: int = 300):
+    def __init__(self, csv_path: str, sample_size: int):
         """
         Initialize the DataHandler.
         
@@ -48,8 +48,6 @@ class DataHandler:
             # Convert to list of LabelModel objects
             data = []
             for _, row in df.iterrows():
-                print(row['text'])
-                print(row['label'])
                 data.append(LabelModel(
                     text=row['text'],
                     label_name=row['label'],

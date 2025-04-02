@@ -1,6 +1,7 @@
 import logging, random
+import sys
 from collections import defaultdict
-
+import pandas as pd
 from models.label_model import LabelModel
 from services.datahandler import DataHandler
 from services.prompt_runner import PromptRunner
@@ -10,9 +11,11 @@ class Orchestrator:
     Class to orchestrate the process of evaluating language models for text classification.
     """
 
-    def __init__(self, 
+    def __init__(self,
                  data_handler: DataHandler, 
                  prompt_runner: PromptRunner,
+                 openai_active: str,
+                 ollama_active: str,
                  csv_path: str):
         """
         Initialize the Orchestrator.
@@ -24,10 +27,14 @@ class Orchestrator:
         """
         self.data_handler = data_handler
         self.prompt_runner = prompt_runner
+        self.openai_active:str = str(openai_active)
+        self.ollama_active:str = str(ollama_active)
         self.csv_path = csv_path
         self.logger = logging.getLogger(__name__)
+        self.results: dict[str, dict[str, (str, list[LabelModel])]] = dict()
 
-        self._ERROR = "ERROR"
+        self.shot_types = ['zero_shot', 'one_shot', 'few_shot']
+        self.ERROR = "ERROR"
     
     def run(self):
         """
@@ -38,51 +45,53 @@ class Orchestrator:
         """
         try:
             self.logger.info("Starting evaluation process")
-            
+
             # Read data
             data = self.data_handler.read_csv()
 
-            # Randomly select x entries
-            random_testing_samples = random.sample(data, 100)
-
-            # Remove the x samples that are including in the testing set
-            for item in random_testing_samples:
-                data.remove(item)
-
             # Get unique label names
             label_names = list(set(item.label_name for item in data))
-            self.logger.info(f"Found {len(label_names)} unique labels: {label_names}")
+            # self.logger.info(f"Found {len(label_names)} unique labels: {label_names}")
             
             # Select examples for few-shot prompting
             few_shot_examples = self._select_few_shot_examples(data, label_names)
 
             # Run evaluations
-            results: dict[str, dict[str, (str, list[LabelModel])]] = {
-                "ollama": {
-                    "zero_shot": self._evaluate_zero_shot(random_testing_samples, label_names, "ollama"),
-                    "one_shot": self._evaluate_one_shot(random_testing_samples, label_names, "ollama", random.choice(few_shot_examples)),
-                    "few_shot": self._evaluate_few_shot(random_testing_samples, label_names, "ollama", few_shot_examples)
-                },
-                "openai": {
-                    "zero_shot": self._evaluate_zero_shot(random_testing_samples, label_names, "openai"),
-                    "one_shot": self._evaluate_one_shot(random_testing_samples, label_names, "openai", random.choice(few_shot_examples)),
-                    "few_shot": self._evaluate_few_shot(random_testing_samples, label_names, "openai", few_shot_examples)
-                }
-            }
-            
+            if self.ollama_active == "true":
+                self.results["ollama"] = {}
+
+            if self.openai_active == "true":
+                self.results["openai"] = {}
+
+            if not self.results:
+                self.logger.warning('Exiting program since the dictonary is empty. Check your .env settings.')
+                sys.exit(0)
+
+            for model in self.results.keys():
+                for prompt_type in self.shot_types:
+                    if prompt_type == "zero_shot":
+                        self.results[model][prompt_type] = self._evaluate_zero_shot(data, label_names,model)
+                    if prompt_type == "one_shot":
+                        self.results[model][prompt_type] = self._evaluate_one_shot(data, label_names,model,random.choice(few_shot_examples))
+                    if prompt_type== "few_shot":
+                        self.results[model][prompt_type] = self._evaluate_few_shot(data, label_names, model, few_shot_examples)
+
             # Calculate and log summary metrics
-            self._calculate_metrics(results)
-            
+            self._calculate_metrics()
+            label_scores = {
+                'label_name': [model.label_name for model in data],
+                'predicted_label': [model.predicted_label for model in data]
+            }
+            df_scores = pd.DataFrame(label_scores)
+            df_scores['is_correct'] = (df_scores['label_name'] == df_scores['predicted_label']).astype(int)
+
+            for model in self.results.keys():
+                for prompt_type in self.shot_types:
+                    df_scores.to_csv(f"results_{model}_{prompt_type}.csv", index=False)
+
+            print(df_scores.head())
+
             self.logger.info("Evaluation process completed successfully")
-
-            # Log summary of results
-            self.logger.info("Evaluation summary:")
-            for model in ["ollama", "openai"]:
-                for prompt_type in ["zero_shot", "one_shot", "few_shot"]:
-                    accuracy = results[model][prompt_type]["accuracy"]
-                    self.logger.info(f"Model: {model}, Prompt Type: {prompt_type}, Accuracy: {accuracy:.4f}")
-
-            self.logger.info("Text classification evaluation completed successfully")
             
         except Exception as e:
             self.logger.error(f"Error in evaluation process: {str(e)}")
@@ -149,15 +158,13 @@ class Orchestrator:
 
             except Exception as e:
                 self.logger.error(f"Error in zero-shot evaluation for {model_type} with text '{item.text[:30]}...': {str(e)}")
-                item.predicted_label = self._ERROR
+                item.predicted_label = self.ERROR
 
                 results.append(item)
         
         # Calculate accuracy
         correct_count = sum(1 for r in results if r.predicted_label == r.predicted_label)
         accuracy = correct_count / len(results) if results else 0
-        
-        self.logger.info(f"{model_type} zero-shot accuracy: {accuracy:.4f}")
         
         return {
             "accuracy": accuracy,
@@ -181,7 +188,6 @@ class Orchestrator:
         Returns:
             Dictionary containing evaluation results.
         """
-        self.logger.info(f"Evaluating {model_type} with one-shot prompting")
         
         results:list[LabelModel] = []
         
@@ -191,7 +197,7 @@ class Orchestrator:
                     text=item.text,
                     example=one_shot_examples,
                     label_names=label_names,
-                    model_type=model_type
+                    model_type=model_type,
                 )
                 
                 # Parse response to get predicted label
@@ -201,15 +207,15 @@ class Orchestrator:
 
             except Exception as e:
                 self.logger.error(f"Error in one-shot evaluation for {model_type} with text '{item.text[:30]}...': {str(e)}")
-                item.predicted_label = self._ERROR
+                item.predicted_label = self.ERROR
                 results.append(item)
         
         # Calculate accuracy
         correct_count = sum(1 for r in results if r.label_name == r.predicted_label)
         accuracy = correct_count / len(results) if results else 0
-        
-        self.logger.info(f"{model_type} one-shot accuracy: {accuracy:.4f}")
-        
+
+
+
         return {
             "accuracy": accuracy,
             "results": results
@@ -232,7 +238,6 @@ class Orchestrator:
         Returns:
             Dictionary containing evaluation results.
         """
-        self.logger.info(f"Evaluating {model_type} with few-shot prompting")
         
         results = []
         
@@ -252,14 +257,14 @@ class Orchestrator:
 
             except Exception as e:
                 self.logger.error(f"Error in few-shot evaluation for {model_type} with text '{item.text[:30]}...': {str(e)}")
-                item.predicted_label = self._ERROR
+                item.predicted_label = self.ERROR
                 results.append(item)
         
         # Calculate accuracy
         correct_count = sum(1 for r in results if r.label_name == r.predicted_label)
         accuracy = correct_count / len(results) if results else 0
         
-        self.logger.info(f"{model_type} few-shot accuracy: {accuracy:.4f}")
+        #self.logger.info(f"{model_type} few-shot accuracy: {accuracy:.4f}")
         
         return {
             "accuracy": accuracy,
@@ -291,7 +296,7 @@ class Orchestrator:
         self.logger.warning(f"Could not parse label from response: {response[:50]}...")
         return "UNKNOWN"
     
-    def _calculate_metrics(self, results: dict[str, dict[str, (str, list[LabelModel])]]) -> None:
+    def _calculate_metrics(self) -> None:
         """
         Calculate and log summary metrics from the evaluation results.
         
@@ -299,19 +304,12 @@ class Orchestrator:
             results: Dictionary containing evaluation results.
         """
         self.logger.info("Summary Metrics:")
-        
-        for model in ["ollama", "openai"]:
-            for prompt_type in ["zero_shot", "one_shot", "few_shot"]:
-                accuracy = results[model][prompt_type]["accuracy"]
+        for model in self.results.keys():
+            total_accuracy = 0
+
+            for prompt_type in self.shot_types:
+                accuracy = self.results[model][prompt_type]["accuracy"]
                 self.logger.info(f"{model.upper()} {prompt_type}: Accuracy = {accuracy:.4f}")
-                
-        # Compare model performance
-        ollama_avg = (results["ollama"]["zero_shot"]["accuracy"] + 
-                     results["ollama"]["one_shot"]["accuracy"] + 
-                     results["ollama"]["few_shot"]["accuracy"]) / 3
-                     
-        openai_avg = (results["openai"]["zero_shot"]["accuracy"] + 
-                     results["openai"]["one_shot"]["accuracy"] + 
-                     results["openai"]["few_shot"]["accuracy"]) / 3
-                     
-        self.logger.info(f"Average accuracy - OLLAMA: {ollama_avg:.4f}, OPENAI: {openai_avg:.4f}")
+                total_accuracy += accuracy
+            avg_accuracy = total_accuracy/len(self.shot_types)
+            self.logger.info(f"Average accuracy - {model}: {avg_accuracy:.4f}")
